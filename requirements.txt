@@ -1,2 +1,4 @@
 flask
 suntime
+flasgger
+jsonschema==4.17.3

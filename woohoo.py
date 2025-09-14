@@ -6,6 +6,7 @@ import threading
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),"lib"))
 from flask import Flask, request
+from flasgger import Swagger
 from suntime import Sun
 import requests
 
@@ -35,6 +36,7 @@ class Woohoo(sp.BaseDevice):
     def __init__(self):
         sp.BaseDevice.__init__(self)
         self.restServer = Flask(__name__)
+        self.swagger = Swagger(self.restServer)
         self.listener_thread = None
 
     def afterInit(self):
@@ -61,6 +63,13 @@ class Woohoo(sp.BaseDevice):
         self.listener_thread.start()
     
     def shutdown(self):
+        """
+        Shutdown the server.
+        ---
+        responses:
+          200:
+            description: Server is shutting down.
+        """
         func = request.environ.get("werkzeug.server.shutdown")
         if func is None:
             pass
@@ -138,8 +147,73 @@ class Woohoo(sp.BaseDevice):
         return states
 
     def restGET_Calendar_Endpoint(self):
+        """
+        Get calendar entries for a specific day or a date range.
+        ---
+        parameters:
+          - name: year
+            in: query
+            type: integer
+            required: true
+            description: The start year to filter by.
+          - name: month
+            in: query
+            type: integer
+            required: true
+            description: The start month to filter by.
+          - name: day
+            in: query
+            type: integer
+            required: true
+            description: The start day to filter by.
+          - name: end_year
+            in: query
+            type: integer
+            required: false
+            description: The optional end year for a date range.
+          - name: end_month
+            in: query
+            type: integer
+            required: false
+            description: The optional end month for a date range.
+          - name: end_day
+            in: query
+            type: integer
+            required: false
+            description: The optional end day for a date range.
+        responses:
+          200:
+            description: A list of calendar entries for the specified day or date range.
+            schema:
+              type: object
+              properties:
+                metainfos:
+                  type: object
+                filterInfos:
+                  type: object
+                sunInfos:
+                  type: object
+                availableStates:
+                  type: array
+                  items:
+                    type: object
+                calendarEntries:
+                  type: array
+                  items:
+                    type: object
+        """
         self.pushStatusInput()
-        data = request.get_json()
+        
+        year = request.args.get('year', type=int)
+        month = request.args.get('month', type=int)
+        day = request.args.get('day', type=int)
+
+        end_year = request.args.get('end_year', type=int)
+        end_month = request.args.get('end_month', type=int)
+        end_day = request.args.get('end_day', type=int)
+
+        if not all([year, month, day]):
+            return Utils.error_response
 
         # Sunset and Sunrise
         latitude = 25.200368938106816
@@ -156,10 +230,6 @@ class Woohoo(sp.BaseDevice):
             }
         }
 
-        filter_cfg = data.get("filter")
-        if not filter_cfg or "day" not in filter_cfg or "month" not in filter_cfg or "year" not in filter_cfg:
-            return Utils.error_response
-
         metainfos = {
             "time": {
                 "timeformat": "integer -> Unix Timestamp  (Milliseconds (1/1,000 second) since Jan 01 1970. (UTC))",
@@ -167,13 +237,14 @@ class Woohoo(sp.BaseDevice):
             }
         }
 
-        filterInfos = {
-            "filter": {
-                "year": int(filter_cfg["year"]),
-                "month": int(filter_cfg["month"]),
-                "day": int(filter_cfg["day"])
-            }
-        }
+        filter_dict = {"year": year, "month": month, "day": day}
+        is_range_query = all([end_year, end_month, end_day])
+        if is_range_query:
+            filter_dict["end_year"] = end_year
+            filter_dict["end_month"] = end_month
+            filter_dict["end_day"] = end_day
+        
+        filterInfos = {"filter": filter_dict}
 
         linkedStateMachine = self._getStateMachineFromTarget()
         states = self._getStates(linkedStateMachine)
@@ -188,17 +259,51 @@ class Woohoo(sp.BaseDevice):
             for s in states
         ]
 
-        searchYear, searchMonth, searchDay = (
-            filterInfos["filter"][k] for k in ("year", "month", "day")
-        )
-
-        searchStart, searchEnd = Utils.unix_time_range_ms(searchYear, searchMonth, searchDay, self.dayStart.value, self.dayEnd.value)
+        searchStart, single_day_searchEnd = Utils.unix_time_range_ms(year, month, day, self.dayStart.value, self.dayEnd.value)
+        
+        if is_range_query:
+            _, searchEnd = Utils.unix_time_range_ms(end_year, end_month, end_day, self.dayStart.value, self.dayEnd.value)
+        else:
+            searchEnd = single_day_searchEnd
 
         calendarEntries = self._getAllCalendarEntries(self._getCalendarFromtarget(), searchStart, searchEnd)
         self.pushStatusOutput()
         return {**metainfos, **filterInfos, **sunInfos, "availableStates" : availableStates, "calendarEntries": calendarEntries}
 
     def restPOST_Calendar_Endpoint(self):
+        """
+        Update calendar entries for a specific day.
+        ---
+        parameters:
+          - name: body
+            in: body
+            required: true
+            schema:
+              type: object
+              properties:
+                filter:
+                  $ref: '#/definitions/calendar_filter'
+                calendarEntries:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      state:
+                        type: string
+                      start:
+                        type: integer
+                      end:
+                        type: integer
+        responses:
+          200:
+            description: The updated list of calendar entries.
+            schema:
+              type: array
+              items:
+                type: object
+        """
         self.pushStatusInput()
         data = request.get_json()
 
@@ -329,11 +434,6 @@ class Woohoo(sp.BaseDevice):
     def onEnabling(self):
         self.showStatusArrow(True, True)
         self.setStatus(sp.StatusType.Connecting)
-
-    def shutdown(self):
-        self.showStatusArrow(False, False)
-        self._stopThread()
-        self.setStatus(sp.StatusType.Disconnect)
 
 if __name__ == "__main__":
     sp.registerPlugin(Woohoo)
